@@ -680,7 +680,8 @@ int main(int argc, char** argv) {
 
     // Don't mount filesystems or start core system services in charger mode.
     std::string bootmode = property_get("ro.bootmode");
-    if (bootmode == "charger" || charging_mode_booting() ||
+
+    if (bootmode == "charger" || bootmode == "mot-charger" || charging_mode_booting() ||
             strcmp(battchg_pause, BOARD_CHARGING_CMDLINE_VALUE) == 0) {
         am.QueueEventTrigger("charger");
     } else if (strncmp(bootmode.c_str(), "ffbm", 4) == 0) {
