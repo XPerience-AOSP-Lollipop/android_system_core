@@ -10,8 +10,9 @@ import /init.${ro.hardware}.rc
 import /init.${ro.zygote}.rc
 import /init.trace.rc
 # Include CM's extra init file
-import /init.cm.rc
-
+# import /init.cm.rc
+#Include XPe's extra init file
+import /init.xpe.rc
 
 on early-init
     # Set init and its forked children's oom_adj.
