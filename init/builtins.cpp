@@ -111,23 +111,35 @@ static void service_start_if_not_disabled(struct service *svc)
 
 int do_class_start(int nargs, char **args)
 {
-        /* Starting a class does not start services
-         * which are explicitly disabled.  They must
-         * be started individually.
-         */
+    char prop[PROP_NAME_MAX];
+    snprintf(prop, PROP_NAME_MAX, "class_start:%s", args[1]);
+
+    /* Starting a class does not start services
+     * which are explicitly disabled.  They must
+     * be started individually.
+     */
     service_for_each_class(args[1], service_start_if_not_disabled);
+    action_for_each_trigger(prop, action_add_queue_tail);
     return 0;
 }
 
 int do_class_stop(int nargs, char **args)
 {
+    char prop[PROP_NAME_MAX];
+    snprintf(prop, PROP_NAME_MAX, "class_stop:%s", args[1]);
+
     service_for_each_class(args[1], service_stop);
+    action_for_each_trigger(prop, action_add_queue_tail);
     return 0;
 }
 
 int do_class_reset(int nargs, char **args)
 {
+    char prop[PROP_NAME_MAX];
+    snprintf(prop, PROP_NAME_MAX, "class_reset:%s", args[1]);
+
     service_for_each_class(args[1], service_reset);
+    action_for_each_trigger(prop, action_add_queue_tail);
     return 0;
 }
 
@@ -816,9 +828,9 @@ int do_load_persist_props(int nargs, char **args) {
     return -1;
 }
 
-int do_load_all_props(int nargs, char **args) {
+int do_load_system_props(int nargs, char **args) {
     if (nargs == 1) {
-        load_all_props();
+        load_system_props();
         return 0;
     }
     return -1;
@@ -846,18 +858,31 @@ static int do_installkeys_ensure_dir_exists(const char* dir)
     return 0;
 }
 
+static bool is_file_crypto() {
+    char prop_value[PROP_VALUE_MAX] = {0};
+    property_get("ro.crypto.type", prop_value);
+    return strcmp(prop_value, "file") == 0;
+}
+
 int do_installkey(int nargs, char **args)
 {
     if (nargs != 2) {
         return -1;
     }
-
-    char prop_value[PROP_VALUE_MAX] = {0};
-    property_get("ro.crypto.type", prop_value);
-    if (strcmp(prop_value, "file")) {
+    if (!is_file_crypto()) {
         return 0;
     }
-
     return e4crypt_create_device_key(args[1],
                                      do_installkeys_ensure_dir_exists);
+}
+
+int do_setusercryptopolicies(int nargs, char **args)
+{
+    if (nargs != 2) {
+        return -1;
+    }
+    if (!is_file_crypto()) {
+        return 0;
+    }
+    return e4crypt_set_user_crypto_policies(args[1]);
 }
