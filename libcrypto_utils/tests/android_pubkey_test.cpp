@@ -13,25 +13,18 @@
  * See the License for the specific language governing permissions and
  * limitations under the License.
  */
-
 #include <crypto_utils/android_pubkey.h>
-
 #include <string.h>
-
 #include <memory>
-
 #include <openssl/obj_mac.h>
 #include <openssl/rsa.h>
-
 #include <gtest/gtest.h>
-
 // Test digest to verify.
 const uint8_t kDigest[] = {
     0x31, 0x5f, 0x5b, 0xdb, 0x76, 0xd0, 0x78, 0xc4, 0x3b, 0x8a, 0xc0,
     0x06, 0x4e, 0x4a, 0x01, 0x64, 0x61, 0x2b, 0x1f, 0xce, 0x77, 0xc8,
     0x69, 0x34, 0x5b, 0xfc, 0x94, 0xc7, 0x58, 0x94, 0xed, 0xd3,
 };
-
 // 2048 RSA test key.
 const uint8_t kKey2048[ANDROID_PUBKEY_ENCODED_SIZE] = {
     0x40, 0x00, 0x00, 0x00, 0x05, 0x75, 0x61, 0xd1, 0x33, 0xf0, 0x2d, 0x12,
@@ -79,7 +72,6 @@ const uint8_t kKey2048[ANDROID_PUBKEY_ENCODED_SIZE] = {
     0x6a, 0x7b, 0x01, 0x2f, 0xab, 0x7b, 0xb5, 0xfe, 0x62, 0x37, 0x2d, 0x94,
     0x43, 0x2f, 0x4d, 0x16, 0x01, 0x00, 0x01, 0x00,
 };
-
 // 2048 bit RSA signature.
 const uint8_t kSignature2048[ANDROID_PUBKEY_MODULUS_SIZE] = {
     0x3a, 0x11, 0x84, 0x40, 0xc1, 0x2f, 0x13, 0x8c, 0xde, 0xb0, 0xc3, 0x89,
@@ -105,25 +97,21 @@ const uint8_t kSignature2048[ANDROID_PUBKEY_MODULUS_SIZE] = {
     0x64, 0x8c, 0x45, 0x1c, 0x1d, 0x58, 0xcc, 0xd2, 0xf8, 0x2b, 0x4c, 0x4e,
     0x14, 0x89, 0x2d, 0x70,
 };
-
 struct AndroidPubkeyTest : public ::testing::Test {
-  void SetUp() override {
-    RSA* new_key = nullptr;
-    ASSERT_TRUE(android_pubkey_decode(kKey2048, sizeof(kKey2048), &new_key));
-    key_.reset(new_key);
-  }
-
-  std::unique_ptr<RSA, void(*)(RSA*)> key_ = {nullptr, RSA_free};
+    void SetUp() override {
+        RSA* new_key = nullptr;
+        ASSERT_TRUE(android_pubkey_decode(kKey2048, sizeof(kKey2048), &new_key));
+        key_.reset(new_key);
+    }
+    std::unique_ptr<RSA, void(*)(RSA*)> key_ = {nullptr, RSA_free};
 };
-
 TEST_F(AndroidPubkeyTest, Decode) {
-  // Make sure the decoded key successfully verifies a valid signature.
-  EXPECT_TRUE(RSA_verify(NID_sha256, kDigest, sizeof(kDigest), kSignature2048,
-                         sizeof(kSignature2048), key_.get()));
+    // Make sure the decoded key successfully verifies a valid signature.
+    EXPECT_TRUE(RSA_verify(NID_sha256, kDigest, sizeof(kDigest), kSignature2048,
+                           sizeof(kSignature2048), key_.get()));
 }
-
 TEST_F(AndroidPubkeyTest, Encode) {
-  uint8_t key_data[ANDROID_PUBKEY_ENCODED_SIZE];
-  ASSERT_TRUE(android_pubkey_encode(key_.get(), key_data, sizeof(key_data)));
-  ASSERT_EQ(0, memcmp(kKey2048, key_data, sizeof(kKey2048)));
+    uint8_t key_data[ANDROID_PUBKEY_ENCODED_SIZE];
+    ASSERT_TRUE(android_pubkey_encode(key_.get(), key_data, sizeof(key_data)));
+    ASSERT_EQ(0, memcmp(kKey2048, key_data, sizeof(kKey2048)));
 }
