@@ -19,7 +19,7 @@
 #include <assert.h>
 #include <stdlib.h>
 #include <string.h>
-
+#include <openssl/bn.h>
 // Better safe than sorry.
 #if (ANDROID_PUBKEY_MODULUS_SIZE % 4) != 0
 #error RSA modulus size must be multiple of the word size!
