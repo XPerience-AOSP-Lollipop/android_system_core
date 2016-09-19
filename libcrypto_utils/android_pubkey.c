@@ -14,7 +14,7 @@
  * limitations under the License.
  */
 
-#include <crypto_utils/android_pubkey.h>
+#include "crypto_utils/android_pubkey.h"
 
 #include <assert.h>
 #include <stdlib.h>
@@ -28,6 +28,7 @@
 // Size of the RSA modulus in words.
 #define ANDROID_PUBKEY_MODULUS_SIZE_WORDS (ANDROID_PUBKEY_MODULUS_SIZE / 4)
 
+bool android_pubkey_decode(const uint8_t* key_buffer, size_t size, RSA** key);
 // This file implements encoding and decoding logic for Android's custom RSA
 // public key binary format. Public keys are stored as a sequence of
 // little-endian 32 bit words. Note that Android only supports little-endian
