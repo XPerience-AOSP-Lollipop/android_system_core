@@ -115,8 +115,8 @@ LOCAL_STATIC_LIBRARIES := \
     libc \
     libselinux \
     liblog \
-    libcrypto_utils_static \
-    libcrypto_static \
+    libcrypto_utils \
+    libcrypto \
     libext2_blkid \
     libext2_uuid_static \
     libc++_static \
