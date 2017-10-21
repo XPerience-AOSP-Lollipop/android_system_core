@@ -126,6 +126,9 @@
 #define AID_RFS_OLD          3012  /* DEPRECATED OLD ID FOR RFS, DO NOT USE */
 #define AID_RFS_SHARED_OLD   3013  /* DEPRECATED OLD ID FOR RFS-SHARED  */
 
+/* Keep  AID_IMS */
+#define AID_IMS           3015  /* can read/write /dev/socket/imsrtp */
+
 /* The range 5000-5999 is also reserved for OEM, and must never be used here. */
 #define AID_OEM_RESERVED_2_START 5000
 #define AID_OEM_RESERVED_2_END   5999
