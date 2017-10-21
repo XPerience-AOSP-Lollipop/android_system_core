@@ -54,6 +54,8 @@
 #include "ueventd_parser.h"
 #include "util.h"
 #include "log.h"
+#include <zlib.h>
+#include "property_service.h"
 
 #define SYSFS_PREFIX    "/sys"
 static const char *firmware_dirs[] = { "/etc/firmware",
@@ -883,21 +885,40 @@ static void handle_device_event(struct uevent *uevent)
     }
 }
 
-static void load_firmware(uevent* uevent, const std::string& root,
-                          int fw_fd, size_t fw_size,
-                          int loading_fd, int data_fd) {
-    // Start transfer.
-    android::base::WriteFully(loading_fd, "1", 1);
+static int load_firmware(int fw_fd, gzFile gz_fd, int loading_fd, int data_fd)
+{
+    int ret = 0;
 
-    // Copy the firmware.
-    int rc = sendfile(data_fd, fw_fd, nullptr, fw_size);
-    if (rc == -1) {
-        PLOG(ERROR) << "firmware: sendfile failed { '" << root << "', '" << uevent->firmware << "' }";
+    write(loading_fd, "1", 1);  /* start transfer */
+
+    while (1) {
+        char buf[PAGE_SIZE];
+        ssize_t nr;
+
+        if (gz_fd != Z_NULL)
+            nr = gzread(gz_fd, buf, sizeof(buf));
+        else
+            nr = read(fw_fd, buf, sizeof(buf));
+        if(!nr)
+            break;
+        if(nr < 0) {
+            ret = -1;
+            break;
+        }
+        if (!android::base::WriteFully(data_fd, buf, nr)) {
+            ret = -1;
+            break;
+        }
     }
 
-    // Tell the firmware whether to abort or commit.
-    const char* response = (rc != -1) ? "0" : "-1";
-    android::base::WriteFully(loading_fd, response, strlen(response));
+    if(!ret)
+        write(loading_fd, "0", 1);  /* successful end of transfer */
+    else {
+        ERROR("%s: aborted transfer\n", __func__);
+        write(loading_fd, "-1", 2); /* abort transfer */
+    }
+
+    return ret;
 }
 
 static int is_booting() {
@@ -958,7 +979,7 @@ static int load_from_extended(const char *firmware, int loading_fd, int data_fd)
         goto out_extended;
     }
 
-    if (load_firmware(fw_fd, loading_fd, data_fd) != 0) {
+    if (load_firmware(fw_fd, Z_NULL, loading_fd, data_fd) != 0) {
         ERROR("firmware: could not load '%s'\n", firmware);
     }
     close(fw_fd);
@@ -971,9 +992,26 @@ out_extended:
 #endif
 /* END IKVOICE-4341 */
 
+gzFile fw_gzopen(const char *fname, const char *mode)
+{
+    char *gzfile = NULL;
+    int l;
+    gzFile gz_fd = Z_NULL;
+
+    l = asprintf(&gzfile, "%s.gz", fname);
+    if (l == -1)
+        goto out;
+
+    gz_fd = gzopen(gzfile, mode);
+    free(gzfile);
+out:
+    return gz_fd;
+}
+
 static void process_firmware_event(struct uevent *uevent)
 {
     int booting = is_booting();
+    gzFile gz_fd = Z_NULL;
 
     LOG(INFO) << "firmware: loading '" << uevent->firmware << "' for '" << uevent->path << "'";
 
@@ -1002,23 +1040,49 @@ static void process_firmware_event(struct uevent *uevent)
 /* END IKVOICE-4341 */
 
 try_loading_again:
-    for (size_t i = 0; i < arraysize(firmware_dirs); i++) {
-        std::string file = android::base::StringPrintf("%s/%s", firmware_dirs[i], uevent->firmware);
-        android::base::unique_fd fw_fd(open(file.c_str(), O_RDONLY|O_CLOEXEC));
-        struct stat sb;
-        if (fw_fd != -1 && fstat(fw_fd, &sb) != -1) {
-            load_firmware(uevent, root, fw_fd, sb.st_size, loading_fd, data_fd);
-            return;
+    for (i = 0; i < ARRAY_SIZE(firmware_dirs); i++) {
+        char *file = NULL;
+        l = asprintf(&file, "%s/%s", firmware_dirs[i], uevent->firmware);
+        if (l == -1)
+            goto data_free_out;
+        fw_fd = open(file, O_RDONLY|O_CLOEXEC);
+        if (fw_fd < 0)
+            gz_fd = fw_gzopen(file, "rb");
+        free(file);
+        if (fw_fd >= 0 || gz_fd != Z_NULL ) {
+            if(!load_firmware(fw_fd, gz_fd, loading_fd, data_fd))
+                INFO("firmware: copy success { '%s', '%s' }\n", root, uevent->firmware);
+            else
+                INFO("firmware: copy failure { '%s', '%s' }\n", root, uevent->firmware);
+            break;
+        }
+    }
+    if (fw_fd < 0 && gz_fd == Z_NULL) {
+        if (booting) {
+            /* If we're not fully booted, we may be missing
+             * filesystems needed for firmware, wait and retry.
+             */
+            usleep(100000);
+            booting = is_booting();
+            goto try_loading_again;
         }
     }
 
-    if (booting) {
-        // If we're not fully booted, we may be missing
-        // filesystems needed for firmware, wait and retry.
-        std::this_thread::sleep_for(100ms);
-        booting = is_booting();
-        goto try_loading_again;
-    }
+    if (gz_fd != Z_NULL)
+        gzclose(gz_fd);
+    else
+        close(fw_fd);
+data_close_out:
+    close(data_fd);
+loading_close_out:
+    close(loading_fd);
+data_free_out:
+    free(data);
+loading_free_out:
+    free(loading);
+root_free_out:
+    free(root);
+}
 
     LOG(ERROR) << "firmware: could not find firmware for " << uevent->firmware;
 
