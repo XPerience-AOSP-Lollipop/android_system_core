@@ -54,6 +54,11 @@
 #include "ueventd_parser.h"
 #include "util.h"
 #include "log.h"
+#include "property_service.h"
+
+#define ARRAY_SIZE(a)                               \
+  ((sizeof(a) / sizeof(*(a))) /                     \
+  static_cast<size_t>(!(sizeof(a) % sizeof(*(a)))))
 
 #define SYSFS_PREFIX    "/sys"
 static const char *firmware_dirs[] = { "/etc/firmware",
@@ -904,6 +909,101 @@ static int is_booting() {
     return access("/dev/.booting", F_OK) == 0;
 }
 
+/*
+   Special firmware look-up functionality intended for non-system media firmware (ie.
+   downloaded firmware). The folders provided must be protected via SELinux policy.
+*/
+struct extended_fw_path {
+    const char *fw_substring;
+    const char *fw_path;
+};
+
+const struct extended_fw_path extended_paths[] = {
+#ifdef MOTO_AOV_WITH_XMCS
+    {
+        .fw_substring = "-aov-",
+        .fw_path = "/data/adspd",
+    },
+#endif
+#ifdef MOTO_GREYBUS_FIRMWARE
+    {
+        .fw_substring = "upd-",
+        .fw_path = "/data/gbfirmware",
+    },
+#endif
+};
+
+static int is_hard_link(const char *path)
+{
+    int rv = 1;
+    struct stat sb;
+
+    if(stat(path, &sb) == 0) {
+        if((S_ISDIR(sb.st_mode)) || (sb.st_nlink == 1))
+            rv = 0;
+        else
+            PLOG(ERROR) << "Invalid hard link (%s), nlink=%ld ignoring!\n" << path <<
+                  (long)sb.st_nlink;
+                  
+    } else if (errno == ENOENT)
+        rv = 0;
+    return(rv);
+}
+
+static int load_one_extended(const char *firmware, int loading_fd, int data_fd, size_t index)
+{
+    int l, fw_fd;
+    char *file = NULL;
+    int ret = 0;
+
+    /* look for naming convention for the target firmware */
+    if (strstr(firmware, extended_paths[index].fw_substring) == NULL) {
+        return 0;
+    }
+
+    l = asprintf(&file, "%s/%s", extended_paths[index].fw_path, firmware);
+    if (l == -1)
+        return 0;
+
+    if (is_hard_link(file)) {
+        goto out_extended;
+    }
+
+    /* Do not consider the case /data folder is still encrypted. It is assumed
+       userspace apps needing these files are started only after data partition
+       is decrypted. */
+    fw_fd = open(file, O_RDONLY | O_NOFOLLOW);
+    if(fw_fd < 0) {
+        goto out_extended;
+    }
+
+    /*if (load_firmware(event, root,fw_fd,fw_size, loading_fd, data_fd= 0) {   
+        PLOG(ERROR) << "firmware: could not load '%s'\n" << root << uevent->firmware;
+    }*/
+    close(fw_fd);
+
+out_extended:
+    free(file);
+    return ret;
+}
+
+/*
+    -   The function returns the following values:
+    -   -1 - Firmware loading was either success or failure. No need to look for further folders.
+    -    0 - Firmware was not loaded. Further folders need to be looked up.
+*/
+static int load_from_extended(const char *firmware, int loading_fd, int data_fd)
+{
+    size_t i;
+
+    /* Loop through all possible extended folders unless we find a firmware */
+    for (i = 0; i < ARRAY_SIZE(extended_paths); i++)
+        if (load_one_extended(firmware, loading_fd, data_fd, i) == -1)
+            return -1;
+
+    return 0;
+}
+
 static void process_firmware_event(uevent* uevent) {
     int booting = is_booting();
 
@@ -923,6 +1023,10 @@ static void process_firmware_event(uevent* uevent) {
     if (data_fd == -1) {
         PLOG(ERROR) << "couldn't open firmware data fd for " << uevent->firmware;
         return;
+    }
+
+    if (load_from_extended(uevent->firmware, loading_fd, data_fd) < 0) {
+        //goto data_close_out;
     }
 
 try_loading_again:

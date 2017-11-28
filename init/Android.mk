@@ -37,6 +37,10 @@ ifeq ($(BOARD_HAS_GREYBUS_INTERFACE),true)
 init_options += -DMOTO_GREYBUS_FIRMWARE
 endif
 
+ifeq ($(BOARD_HAS_GREYBUS_INTERFACE),true)
+init_options += -DMOTO_GREYBUS_FIRMWARE
+endif
+
 init_cflags += \
     $(init_options) \
     -Wall -Wextra \
