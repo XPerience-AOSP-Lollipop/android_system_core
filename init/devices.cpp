@@ -54,8 +54,6 @@
 #include "ueventd_parser.h"
 #include "util.h"
 #include "log.h"
-#include <zlib.h>
-#include "property_service.h"
 
 #define SYSFS_PREFIX    "/sys"
 static const char *firmware_dirs[] = { "/etc/firmware",
@@ -478,41 +476,6 @@ static void parse_event(const char *msg, struct uevent *uevent)
     }
 }
 
-static char **get_v4l_device_symlinks(struct uevent *uevent)
-{
-    char **links;
-    int fd = -1;
-    int nr;
-    char link_name_path[256];
-    char link_name[64];
-
-    if (strncmp(uevent->path, "/devices/virtual/video4linux/video", 34))
-        return NULL;
-
-    links = (char**) malloc(sizeof(char *) * 2);
-    if (!links)
-        return NULL;
-    memset(links, 0, sizeof(char *) * 2);
-
-    snprintf(link_name_path, sizeof(link_name_path), "%s%s%s",
-            SYSFS_PREFIX, uevent->path, "/link_name");
-    fd = open(link_name_path, O_RDONLY);
-    if (fd < 0)
-        goto err;
-    nr = read(fd, link_name, sizeof(link_name) - 1);
-    close(fd);
-    if (nr <= 0)
-        goto err;
-    link_name[nr] = '\0';
-    if (asprintf(&links[0], "/dev/video/%s", link_name) <= 0)
-        links[0] = NULL;
-
-    return links;
-err:
-    free(links);
-    return NULL;
-}
-
 static char **get_character_device_symlinks(struct uevent *uevent)
 {
     const char *parent;
@@ -898,8 +861,6 @@ static void handle_generic_device_event(struct uevent *uevent)
      } else
          base = "/dev/";
      links = get_character_device_symlinks(uevent);
-     if (!links)
-         links = get_v4l_device_symlinks(uevent);
 
      if (!devpath[0])
          snprintf(devpath, sizeof(devpath), "%s%s", base, name);
@@ -922,161 +883,29 @@ static void handle_device_event(struct uevent *uevent)
     }
 }
 
-static int load_firmware(int fw_fd, gzFile gz_fd, int loading_fd, int data_fd)
-{
-    int ret = 0;
+static void load_firmware(uevent* uevent, const std::string& root,
+                          int fw_fd, size_t fw_size,
+                          int loading_fd, int data_fd) {
+    // Start transfer.
+    android::base::WriteFully(loading_fd, "1", 1);
 
-    write(loading_fd, "1", 1);  /* start transfer */
-
-    while (1) {
-        char buf[PAGE_SIZE];
-        ssize_t nr;
-
-        if (gz_fd != Z_NULL)
-            nr = gzread(gz_fd, buf, sizeof(buf));
-        else
-            nr = read(fw_fd, buf, sizeof(buf));
-        if(!nr)
-            break;
-        if(nr < 0) {
-            ret = -1;
-            break;
-        }
-        if (!android::base::WriteFully(data_fd, buf, nr)) {
-            ret = -1;
-            break;
-        }
+    // Copy the firmware.
+    int rc = sendfile(data_fd, fw_fd, nullptr, fw_size);
+    if (rc == -1) {
+        PLOG(ERROR) << "firmware: sendfile failed { '" << root << "', '" << uevent->firmware << "' }";
     }
 
-    if(!ret)
-        write(loading_fd, "0", 1);  /* successful end of transfer */
-    else {
-        ERROR("%s: aborted transfer\n", __func__);
-        write(loading_fd, "-1", 2); /* abort transfer */
-    }
-
-    return ret;
+    // Tell the firmware whether to abort or commit.
+    const char* response = (rc != -1) ? "0" : "-1";
+    android::base::WriteFully(loading_fd, response, strlen(response));
 }
 
 static int is_booting() {
     return access("/dev/.booting", F_OK) == 0;
 }
 
-/*
-   Special firmware look-up functionality intended for non-system media firmware (ie.
-   downloaded firmware). The folders provided must be protected via SELinux policy.
-*/
-struct extended_fw_path {
-    const char *fw_substring;
-    const char *fw_path;
-};
-
-const struct extended_fw_path extended_paths[] = {
-#ifdef MOTO_AOV_WITH_XMCS
-    {
-        .fw_substring = "-aov-",
-        .fw_path = "/data/adspd",
-    },
-#endif
-#ifdef MOTO_GREYBUS_FIRMWARE
-    {
-        .fw_substring = "upd-",
-        .fw_path = "/data/gbfirmware",
-    },
-#endif
-};
-
-static int is_hard_link(const char *path)
-{
-    int rv = 1;
-    struct stat sb;
-
-    if(stat(path, &sb) == 0) {
-        if((S_ISDIR(sb.st_mode)) || (sb.st_nlink == 1))
-            rv = 0;
-        else
-            ERROR("Invalid hard link (%s), nlink=%ld ignoring!\n", path,
-                  (long)sb.st_nlink);
-    } else if (errno == ENOENT)
-        rv = 0;
-    return(rv);
-}
-
-static int load_one_extended(const char *firmware, int loading_fd, int data_fd, size_t index)
-{
-    int l, fw_fd;
-    char *file = NULL;
-    int ret = 0;
-
-    /* look for naming convention for the target firmware */
-    if (strstr(firmware, extended_paths[index].fw_substring) == NULL) {
-        return 0;
-    }
-
-    l = asprintf(&file, "%s/%s", extended_paths[index].fw_path, firmware);
-    if (l == -1)
-        return 0;
-
-    if (is_hard_link(file)) {
-        goto out_extended;
-    }
-
-    /* Do not consider the case /data folder is still encrypted. It is assumed
-       userspace apps needing these files are started only after data partition
-       is decrypted. */
-    fw_fd = open(file, O_RDONLY | O_NOFOLLOW);
-    if(fw_fd < 0) {
-        goto out_extended;
-    }
-
-    if (load_firmware(fw_fd, Z_NULL, loading_fd, data_fd) != 0) {
-        ERROR("firmware: could not load '%s'\n", firmware);
-    }
-    close(fw_fd);
-    ret = -1;
-
-out_extended:
-    free(file);
-    return ret;
-}
-
-/*
-    -   The function returns the following values:
-    -   -1 - Firmware loading was either success or failure. No need to look for further folders.
-    -    0 - Firmware was not loaded. Further folders need to be looked up.
-*/
-static int load_from_extended(const char *firmware, int loading_fd, int data_fd)
-{
-    size_t i;
-
-    /* Loop through all possible extended folders unless we find a firmware */
-    for (i = 0; i < ARRAY_SIZE(extended_paths); i++)
-        if (load_one_extended(firmware, loading_fd, data_fd, i) == -1)
-            return -1;
-
-    return 0;
-}
-
-gzFile fw_gzopen(const char *fname, const char *mode)
-{
-    char *gzfile = NULL;
-    int l;
-    gzFile gz_fd = Z_NULL;
-
-    l = asprintf(&gzfile, "%s.gz", fname);
-    if (l == -1)
-        goto out;
-
-    gz_fd = gzopen(gzfile, mode);
-    free(gzfile);
-out:
-    return gz_fd;
-}
-
-static void process_firmware_event(struct uevent *uevent)
-{
+static void process_firmware_event(uevent* uevent) {
     int booting = is_booting();
-    gzFile gz_fd = Z_NULL;
 
     LOG(INFO) << "firmware: loading '" << uevent->firmware << "' for '" << uevent->path << "'";
 
@@ -1096,54 +925,24 @@ static void process_firmware_event(struct uevent *uevent)
         return;
     }
 
-    if (load_from_extended(uevent->firmware, loading_fd, data_fd) < 0) {
-        goto data_close_out;
-    }
-
 try_loading_again:
-    for (i = 0; i < ARRAY_SIZE(firmware_dirs); i++) {
-        char *file = NULL;
-        l = asprintf(&file, "%s/%s", firmware_dirs[i], uevent->firmware);
-        if (l == -1)
-            goto data_free_out;
-        fw_fd = open(file, O_RDONLY|O_CLOEXEC);
-        if (fw_fd < 0)
-            gz_fd = fw_gzopen(file, "rb");
-        free(file);
-        if (fw_fd >= 0 || gz_fd != Z_NULL ) {
-            if(!load_firmware(fw_fd, gz_fd, loading_fd, data_fd))
-                INFO("firmware: copy success { '%s', '%s' }\n", root, uevent->firmware);
-            else
-                INFO("firmware: copy failure { '%s', '%s' }\n", root, uevent->firmware);
-            break;
-        }
-    }
-    if (fw_fd < 0 && gz_fd == Z_NULL) {
-        if (booting) {
-            /* If we're not fully booted, we may be missing
-             * filesystems needed for firmware, wait and retry.
-             */
-            usleep(100000);
-            booting = is_booting();
-            goto try_loading_again;
+    for (size_t i = 0; i < arraysize(firmware_dirs); i++) {
+        std::string file = android::base::StringPrintf("%s/%s", firmware_dirs[i], uevent->firmware);
+        android::base::unique_fd fw_fd(open(file.c_str(), O_RDONLY|O_CLOEXEC));
+        struct stat sb;
+        if (fw_fd != -1 && fstat(fw_fd, &sb) != -1) {
+            load_firmware(uevent, root, fw_fd, sb.st_size, loading_fd, data_fd);
+            return;
         }
     }
 
-    if (gz_fd != Z_NULL)
-        gzclose(gz_fd);
-    else
-        close(fw_fd);
-data_close_out:
-    close(data_fd);
-loading_close_out:
-    close(loading_fd);
-data_free_out:
-    free(data);
-loading_free_out:
-    free(loading);
-root_free_out:
-    free(root);
-}
+    if (booting) {
+        // If we're not fully booted, we may be missing
+        // filesystems needed for firmware, wait and retry.
+        std::this_thread::sleep_for(100ms);
+        booting = is_booting();
+        goto try_loading_again;
+    }
 
     LOG(ERROR) << "firmware: could not find firmware for " << uevent->firmware;
 
