@@ -26,7 +26,7 @@
 #include <string>
 
 #include <android-base/chrono_utils.h>
-#include <selinux/label.h>
+#include "label.h"
 
 #define COLDBOOT_DONE "/dev/.coldboot_done"
 
